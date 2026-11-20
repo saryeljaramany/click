@@ -208,8 +208,7 @@ complete --no-files --command %(prog_name)s --arguments \
 # Compatible with Windows PowerShell 5.1+ and PowerShell (pwsh) 7+.
 # Uses Register-ArgumentCompleter -Native, which receives the command AST
 # as parsed by PowerShell. The command text is forwarded verbatim through
-# COMP_WORDS so the Python side can reuse the same shlex-based splitting
-# used by the bash/zsh completers.
+# COMP_WORDS so the Python side can split it with PowerShell-aware rules.
 _SOURCE_POWERSHELL = """\
 Register-ArgumentCompleter -Native -CommandName %(prog_name)s -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
@@ -523,7 +522,7 @@ class PowerShellComplete(ShellComplete):
     source_template: t.ClassVar[str] = _SOURCE_POWERSHELL
 
     def get_completion_args(self) -> tuple[list[str], str]:
-        cwords = split_arg_string(os.environ["COMP_WORDS"])
+        cwords = split_arg_string_powershell(os.environ["COMP_WORDS"])
         cword = int(os.environ["COMP_CWORD"])
         args = cwords[1:cword]
 
@@ -627,6 +626,147 @@ def split_arg_string(string: str) -> list[str]:
         # the partial token as-is. The quote or escape character is in
         # lex.state, not lex.token.
         out.append(lex.token)
+
+    return out
+
+
+def split_arg_string_powershell(string: str) -> list[str]:
+    """Split an argument string following PowerShell tokenization rules,
+    preserving Windows file paths with backslashes.
+
+    Unlike POSIX shells, PowerShell treats backslash (``\\``) as an ordinary
+    character rather than an escape character. The backtick (`````) is used
+    as the escape character. Single-quoted strings (``'...'``) are verbatim
+    with ``''`` escaping a single quote. Double-quoted strings (``"..."``)
+    support backtick escaping and ``""`` for an escaped double quote.
+
+    Does not fail if the string is incomplete, preserving the partial token
+    as-is.
+
+    .. code-block:: python
+
+        split_arg_string_powershell(r"mycli sub C:\\Users\\ann\\doc")
+        ["mycli", "sub", "C:\\Users\\ann\\doc"]
+
+        split_arg_string_powershell("mycli 'it''s fine'")
+        ["mycli", "it's fine"]
+
+    :param string: String to split.
+
+    .. versionadded:: 8.6.0
+    """
+    out: list[str] = []
+    current: list[str] = []
+    in_token = False
+    state: str | None = None
+    i = 0
+    n = len(string)
+
+    while i < n:
+        c = string[i]
+
+        if state is None:
+            if c.isspace():
+                if in_token:
+                    out.append("".join(current))
+                    current.clear()
+                    in_token = False
+
+                i += 1
+            elif c == "'":
+                in_token = True
+                state = "'"
+                i += 1
+            elif c == '"':
+                in_token = True
+                state = '"'
+                i += 1
+            elif c == "`":
+                in_token = True
+                i += 1
+
+                if i < n:
+                    esc = string[i]
+
+                    if esc == "0":
+                        current.append("\0")
+                    elif esc == "a":
+                        current.append("\a")
+                    elif esc == "b":
+                        current.append("\b")
+                    elif esc == "f":
+                        current.append("\f")
+                    elif esc == "n":
+                        current.append("\n")
+                    elif esc == "r":
+                        current.append("\r")
+                    elif esc == "t":
+                        current.append("\t")
+                    elif esc == "v":
+                        current.append("\v")
+                    else:
+                        current.append(esc)
+
+                    i += 1
+                else:
+                    current.append("`")
+            else:
+                in_token = True
+                current.append(c)
+                i += 1
+        elif state == "'":
+            if c == "'":
+                if i + 1 < n and string[i + 1] == "'":
+                    current.append("'")
+                    i += 2
+                else:
+                    state = None
+                    i += 1
+            else:
+                current.append(c)
+                i += 1
+        elif state == '"':
+            if c == '"':
+                if i + 1 < n and string[i + 1] == '"':
+                    current.append('"')
+                    i += 2
+                else:
+                    state = None
+                    i += 1
+            elif c == "`":
+                i += 1
+
+                if i < n:
+                    esc = string[i]
+
+                    if esc == "0":
+                        current.append("\0")
+                    elif esc == "a":
+                        current.append("\a")
+                    elif esc == "b":
+                        current.append("\b")
+                    elif esc == "f":
+                        current.append("\f")
+                    elif esc == "n":
+                        current.append("\n")
+                    elif esc == "r":
+                        current.append("\r")
+                    elif esc == "t":
+                        current.append("\t")
+                    elif esc == "v":
+                        current.append("\v")
+                    else:
+                        current.append(esc)
+
+                    i += 1
+                else:
+                    current.append("`")
+            else:
+                current.append(c)
+                i += 1
+
+    if in_token:
+        out.append("".join(current))
 
     return out
 

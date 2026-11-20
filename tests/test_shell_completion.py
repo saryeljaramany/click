@@ -16,6 +16,7 @@ from click.shell_completion import FishComplete
 from click.shell_completion import PowerShellComplete
 from click.shell_completion import shell_complete
 from click.shell_completion import ShellComplete
+from click.shell_completion import split_arg_string_powershell
 from click.types import Choice
 from click.types import File
 from click.types import Path
@@ -615,3 +616,89 @@ def test_powershell_format_completion_escapes_help():
     # produced by ZshComplete.
     item = CompletionItem("--at")
     assert pc.format_completion(item) == "plain\n--at\n_"
+
+
+@pytest.mark.parametrize(
+    ("value", "expect"),
+    [
+        (r"cli C:\Users\ann\doc", ["cli", r"C:\Users\ann\doc"]),
+        ("cli C:\\Temp\\", ["cli", "C:\\Temp\\"]),
+        ("cli C:\\", ["cli", "C:\\"]),
+        (r"cli .\src\click", ["cli", r".\src\click"]),
+        (r"cli ..\..\file.txt", ["cli", r"..\..\file.txt"]),
+        (r"cli 'C:\Program Files\App'", ["cli", r"C:\Program Files\App"]),
+        (r'cli "C:\Program Files\App"', ["cli", r"C:\Program Files\App"]),
+        (r"cli C:\'Program Files'\App", ["cli", r"C:\Program Files\App"]),
+        (r'cli "C:\Program Files (x86)\App"', ["cli", r"C:\Program Files (x86)\App"]),
+        (r'cli --path="C:\Dir"', ["cli", r"--path=C:\Dir"]),
+        (r"cli --path=C:\Dir", ["cli", r"--path=C:\Dir"]),
+        ("cli a` b", ["cli", "a b"]),
+        ("cli 'it''s fine'", ["cli", "it's fine"]),
+        ('cli "say `"hello`""', ["cli", 'say "hello"']),
+        ('cli "say ""hello"""', ["cli", 'say "hello"']),
+        (r"cli 'C:\Users\ann", ["cli", r"C:\Users\ann"]),
+        (r'cli "C:\Program Files', ["cli", r"C:\Program Files"]),
+        ('cli ""', ["cli", ""]),
+        ("cli ''", ["cli", ""]),
+        ("cli sub ", ["cli", "sub"]),
+        ("", []),
+        ("   ", []),
+    ],
+)
+def test_split_arg_string_powershell(value: str, expect: list[str]) -> None:
+    assert split_arg_string_powershell(value) == expect
+
+
+@pytest.mark.usefixtures("_patch_for_completion")
+def test_powershell_full_complete_windows_paths(runner) -> None:
+    cli = Group(
+        "cli",
+        commands=[
+            Command(
+                "install",
+                params=[
+                    Argument(
+                        ["target"],
+                        type=Choice([r"C:\Users\ann\doc", r"C:\Users\bob\doc"]),
+                    )
+                ],
+            )
+        ],
+    )
+    result = runner.invoke(
+        cli,
+        env={
+            "_CLI_COMPLETE": "powershell_complete",
+            "COMP_WORDS": r"cli install C:\Users\a",
+            "COMP_CWORD": "2",
+        },
+    )
+    assert result.output == "plain\nC:\\Users\\ann\\doc\n_\n"
+
+
+@pytest.mark.usefixtures("_patch_for_completion")
+def test_powershell_full_complete_preceding_path_option(runner) -> None:
+    cli = Group(
+        "cli",
+        params=[Option(["--config"])],
+        commands=[Group("sub", commands=[Command("run")])],
+    )
+    result = runner.invoke(
+        cli,
+        env={
+            "_CLI_COMPLETE": "powershell_complete",
+            "COMP_WORDS": r"cli --config C:\Users\ann\app.conf sub ",
+            "COMP_CWORD": "4",
+        },
+    )
+    assert result.output == "plain\nrun\n_\n"
+
+    result = runner.invoke(
+        cli,
+        env={
+            "_CLI_COMPLETE": "powershell_complete",
+            "COMP_WORDS": r"cli --config=C:\Users\ann\app.conf sub ",
+            "COMP_CWORD": "3",
+        },
+    )
+    assert result.output == "plain\nrun\n_\n"
